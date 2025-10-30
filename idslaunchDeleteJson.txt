@@ -1,0 +1,128 @@
+TCHAR buf[64] = { 0 };
+GetPrivateProfileString(_T("Cleanup"), _T("LastCleanupDate"), _T("NA"), buf, 64, _T("Cleanup.ini"));
+
+CString targetFile = _T("D:\\Logs\\data.bin");
+
+if (_tcscmp(buf, _T("NA")) == 0)
+{
+    if (PathFileExists(targetFile))
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (GetFileAttributesEx(targetFile, GetFileExInfoStandard, &fad))
+        {
+            ULONGLONG size = ((ULONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+            double sizeMB = (double)size / (1024.0 * 1024.0);
+            if (sizeMB >= 500.0)
+            {
+                if (DeleteFile(targetFile))
+                {
+                    char msg[128];
+                    sprintf_s(msg, "Target file deleted (%.2f MB, >=500MB on first run).", sizeMB);
+                    Log(msg);
+                }
+                else
+                    Log("Failed to delete target file (>=500MB).");
+            }
+            else
+            {
+                char msg[128];
+                sprintf_s(msg, "Target file size: %.2f MB (<500MB, skipped).", sizeMB);
+                Log(msg);
+            }
+
+            CTime now = CTime::GetCurrentTime();
+            CString dateStr = now.Format(_T("%Y/%m/%d"));
+            WritePrivateProfileString(_T("Cleanup"), _T("LastCleanupDate"), dateStr, _T("Cleanup.ini"));
+        }
+    }
+}
+else
+{
+    int y, m, d;
+    if (_stscanf_s(buf, _T("%d/%d/%d"), &y, &m, &d) == 3)
+    {
+        try
+        {
+            CTime last(y, m, d, 0, 0, 0);
+            CTime now = CTime::GetCurrentTime();
+            CTimeSpan diff = now - last;
+
+            if (diff.GetDays() >= 7)
+            {
+                if (PathFileExists(targetFile))
+                {
+                    WIN32_FILE_ATTRIBUTE_DATA fad;
+                    if (GetFileAttributesEx(targetFile, GetFileExInfoStandard, &fad))
+                    {
+                        ULONGLONG size = ((ULONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+                        double sizeMB = (double)size / (1024.0 * 1024.0);
+                        if (DeleteFile(targetFile))
+                        {
+                            char msg[128];
+                            sprintf_s(msg, "Target file deleted (%.2f MB, >=7 days).", sizeMB);
+                            Log(msg);
+                        }
+                        else
+                            Log("Failed to delete target file after 7 days.");
+                    }
+                }
+
+                CString dateStr = now.Format(_T("%Y/%m/%d"));
+                WritePrivateProfileString(_T("Cleanup"), _T("LastCleanupDate"), dateStr, _T("Cleanup.ini"));
+            }
+            else
+            {
+                char msg[128];
+                sprintf_s(msg, "Cleanup skipped — only %lld days since last cleanup (%s).",
+                          diff.GetDays(), buf);
+                Log(msg);
+            }
+        }
+        catch (...) {}
+    }
+    else
+    {
+        char msg[256];
+        sprintf_s(msg,
+            "Invalid date format in INI. Expected: YYYY/MM/DD, Found: %ws",
+            buf);
+        Log(msg);
+    }
+}
+
+
+
+SetFileAttributes(targetFile, FILE_ATTRIBUTE_NORMAL);
+
+if (!DeleteFile(targetFile))
+{
+    DWORD err = GetLastError();
+    if (err == ERROR_SHARING_VIOLATION)
+    {
+        MoveFileEx(targetFile, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+        Log("File locked (possibly Suricata). Scheduled for deletion on reboot.");
+    }
+    else
+    {
+        char msg[128];
+        sprintf_s(msg, "Delete failed. Error code: %lu", err);
+        Log(msg);
+    }
+}
+else
+{
+    Log("File deleted successfully.");
+}
+
+
+
+
+CString newName = targetFile + _T(".old");
+if (MoveFileEx(targetFile, newName, MOVEFILE_REPLACE_EXISTING))
+    Log("File renamed for cleanup (.old). Will delete later.");
+
+
+if (_wremove(targetFile) == 0)
+    Log("File deleted using _wremove().");
+else
+    Log("Failed to delete using _wremove().");
